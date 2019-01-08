@@ -1,0 +1,289 @@
+---
+title: "Shiny로 지도 나타내기"
+output: html_document
+runtime: shiny
+---
+
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r include=FALSE}
+library(tmap)
+library(sp)
+library(ggmap)
+library(ggplot2)
+library(rgdal)
+library(dplyr)
+library(leaflet)
+```
+
+설치 할 패키지 목록
+
+tmap
+sp
+ggmap
+lggplot2
+rgdal
+dplyr
+leaflet
+rgeos 또는 maptools   
+
+#### **1. shape file 다운받고 불러오기**
+
+
+<http://gadm.org> 홈페이지에서 상단에 있는 Download 를 클릭하여 들어간 후,
+원하는 나라를 클릭하고 File format은 Shapefile로 설정한 후 자료를 다운 받습니다.
+Shapefile에는 '.shp','.shx','.dbf'라는 핵심 파일이 포함되어 있고 특히, 
+우리가 이번에 사용할 파일 '.shp'에는 공간정보인 점(point), 선(line), 다각형(Polygon) 등이 포함되어 있습니다.
+
+
+
+
+ 홈페이지에서 받은 shapefile을 불러오기 위해 *rgdal* 패키지를 설치하고 불러옵니다.(readOGR 을 쓰기 위함) dsn은 .shp가 있는 파일 경로이고 layer는 불러올 shp 파일명 입니다.
+
+```{r}
+setwd("E:/2017프로젝트/샤이니/shp")
+# korea<-readOGR(dsn="KOR_adm_shp", layer="KOR_adm2")
+korea<-readOGR(dsn="shape file/KOR_adm_shp", layer="KOR_adm2",encoding="UTF-8")
+```
+
+
+```{r}
+
+korea@data$NAME_1 = as.character(korea@data$NAME_1)
+korea@data$NAME_2 = as.character(korea@data$NAME_2)
+korea@data$TYPE_2 = as.character(korea@data$TYPE_2)
+korea@data$NAME_3= paste0(korea@data$NAME_1,korea@data$NAME_2,korea@data$TYPE_2)
+
+```
+
+
+
+ shape file을 저장한 변수, korea에서 data 슬롯을 확인해 봅시다. 
+ 
+ 
+ 
+```{r}
+
+head(korea@data,2)
+
+```
+
+
+#### **2. 원하는 데이터 자료를 shape file에 갖다 붙이기**
+
+먼저, 지도를 그리는데 사용하고 싶은 csv 파일을 불러옵니다. 
+여기서는 전국에 있는 햄버거 패스트푸드점의 위치에 대한 csv파일을 가지고 옵니다.
+```{r }
+fastfood = read.csv("food_eng.csv",header = TRUE)
+#전국에 있는 롯데리아, 맥도날드, 버거킹의 위치 
+
+```
+
+```{r}
+
+fastfood$brand = as.character(fastfood$brand)
+fastfood$si_do = as.character(fastfood$si_do)
+fastfood$si_gun_name = as.character(fastfood$si_gun_name)
+fastfood$si_gun_district = as.character(fastfood$si_gun_district)
+```
+각 패스트푸드점의 이름을 입력하면 지역별 지점의 빈도를 구해주는 함수를 만들고 
+빈도를 구한 후 하나의 테이블로 합쳐줍니다.
+
+```{r}
+fast <- function(name){
+  
+  brand=fastfood[grep(name,fastfood$brand),]
+  
+  brand_ad= paste0(brand$si_do,brand$si_gun_name,brand$si_gun_district)
+  brand_freq = data.frame(table(brand_ad),stringsAsFactors=F)
+  brand_freq$brand_ad = as.character( brand_freq$brand_ad)
+  return(brand_freq)
+  
+}
+
+
+lotte=fast("롯데리아")
+king = fast("버거킹")
+mac = fast("맥도날드")
+fastfood=NULL
+fastfood=merge(lotte,king,by="brand_ad",all=TRUE)
+fastfood= merge(fastfood,mac,by="brand_ad",all=TRUE)
+# merge가 최종 정리 데이터
+names(fastfood)<- c('district','lotte_freq','king_freq','mac_freq')
+
+
+```
+
+
+우리가 붙이고 싶은 자료를 left_join을 사용해 korea에 있는 data 슬롯에 붙여 줍니다.
+(이때, left_join을 쓰기 위해서는 *dplyr* 패키지가 필요함.)
+
+```{r}
+
+korea@data<-left_join(korea@data, fastfood, by=c('NAME_3'='district'))
+```
+
+korea에 있는 data 슬롯을 확인해 보면 우리가 쓸 데이터 자료가 붙어 있는 것을 
+확인할 수 있습니다.
+```{r}
+head(korea@data,2)
+
+```
+
+#### **3. 지도그리기**
+
+
+#### 1)ggplot2를 이용한 지도 그리기 
+
+*fortify* 함수를 통해 위도,경도 등 지도를 그릴때 필요한 정보들을 data.frame화 하여 가지고 올 수 있습니다.
+
+```{r}
+lnd_f <- fortify(korea)
+```
+
+lnd_f 확인하기
+
+
+```{r}
+head(lnd_f,3)
+
+```
+
+ shape file에서 가지고 온 위도, 경도 등 자료 붙이기
+ 
+
+```{r}
+korea$id<- row.names(korea)
+lnd_f <- left_join(lnd_f,korea@data)
+
+```
+  
+### shiny 구성하기
+  
+
+시_군 별 패스트푸드 브랜드의 밀집 정도를 지도로 보여줄 shiny 작성
+ui로 패스트푸드 브랜드를 선택할 수 있는 Input 만들기
+server로 지도 그리는 plot의 output 만들기 
+
+```{r}
+library(shiny)
+
+ui <- fluidPage(
+   hr(),
+  titlePanel( h2("ggplot2를 이용한 지도 그리기") ),
+  hr(),
+  
+  sidebarPanel(
+    hr(),
+  selectInput("Brand", label=h3("Brand"),
+              choices=list("롯데리아"="lotte_freq","버거킹"="king_freq","맥도날드"="mac_freq")),
+              
+  hr()
+ ),
+  mainPanel(
+  
+  plotOutput("map1")
+  )
+)
+
+server <- function(input, output) {
+  
+         output$map1 <- renderPlot({ 
+           
+        
+            x=input$Brand
+            dat<- lnd_f[,c("long","lat","group",x)] #필요한 정보만 따로 저장
+            names(dat)<-c("long","lat","group","freq")
+           
+            map <-ggplot(dat,aes(long,lat,group=group,fill=freq))+geom_polygon(colour="black")+coord_equal()  
+            map <- map + scale_fill_gradient(low="skyblue",high="Blue",na.value = "gray")
+            # 제일 작은 값을 white로, 높은 값을 blue로 색칠 하고 na 표시된 구역은 gray로 색칠
+            map
+         })
+        } 
+
+shinyApp(ui, server)
+
+```
+
+### **2)tmap을 이용한 지도 그리기**
+
+qtm함수는 tmap에서 지도를 나타내는 방법 중 가장 간단하고 쉬운 방법입니다.
+
+tmap의 경우는 모드가 plot, view 두가지가 존재하는데 view모드의 경우는 샤이니로 표현하지
+못했기 때문에 tmap_view.R 파일에서 따로 실행해보기 바랍니다.
+
+
+####예시) 시_군 별 패스트푸드 브랜드의 밀집 정도
+```{r}
+
+inputPanel(
+    selectInput("Brand", label=h3("Brand"),
+              choices=list("롯데리아"="lotte_freq","버거킹"="king_freq","맥도날드"="mac_freq"))
+)
+
+   
+    renderPlot({
+    x=input$Brand
+   
+    
+    map1<-qtm(shp=korea,fill=x,fill.palette="Reds",
+              fill.title="Freq",fill.textNA="NA")+tmap_mode("plot")
+  
+
+    print(map1)
+   
+    })
+```
+
+
+
+
+
+####**3)Leaflet을 이용한 지도 만들기**
+
+leaflet의 경우, leaflet을 지원하는 render함수가 존재하기 때문에 shiny와 자주 함께 쓰입니다.
+
+예시) 지도에 마커 , 미니 맵 나타내고 지도 스타일 고르기
+```{r }
+inputPanel(
+   
+      selectInput(
+        "Tiles","Map style", choices=list("Stamen.TonerHybrid"="Stamen.TonerHybrid",
+                                      "Stamen.Watercolor"="Stamen.Watercolor" , 
+                                       "CartoDB.Positron"="CartoDB.Positron",
+                                       "Esri.NatGeoWorldMap"="Esri.NatGeoWorldMap"))
+      #맵 스타일 고르기
+     , 
+      selectInput("region", "위치를 나타낼 지역 선택",
+                 choices=list("Seoul", "Busan" ,"Gwangju","Daegu","Daejeon","Ulsan","Incheon")),
+     #마커를 나타낼 지역 고르기
+     
+     actionButton("do", "Click Me")
+)
+
+
+renderLeaflet({
+  input$do
+        isolate({geo =geocode(input$region) #마커 표시할 지역의 위도, 경도 가지고 오기
+         m <- leaflet()%>%leaflet()%>%setView(126.970691,37.555107,zoom=6)%>%
+                       addProviderTiles(input$Tiles) %>%  
+                      #널리 사용되고 있는 무료 기본 맵을 선택할 수 있다.
+                       addMiniMap( tiles = input$Tiles ,toggleDisplay = TRUE) %>% 
+                      #지도 한 쪽에 작은 미니 맵을 추가할 수 있다. toggleDisplay가 TRUE인 경우, 
+                      #필요하지 않을 때는 접어 놓을 수 있음
+                       addMarkers(lat=geo$lat ,lng=geo$lon , popup=input$region)
+                      #원하는 위치에 마커 추가
+                 })
+        
+})
+
+```
+
+
+
+
+
+.
